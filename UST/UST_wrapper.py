@@ -1,4 +1,3 @@
-from collections import defaultdict
 from huggingface_utils import MODELS
 from sklearn.utils import shuffle
 from transformers import *
@@ -9,17 +8,17 @@ from ust import train_model
 import random
 import logging
 import os
+from collections import defaultdict
+
 logger = logging.getLogger('UST')
 logging.basicConfig(level = logging.INFO)
+logger.info ("UST started")
 class UST_trainer:
-  def __init__(self,model_dir,train_file_path,train_t_col,train_f_col,test_file_path,test_t_col,test_f_col, transfer_file_path, transfer_f_col,seq_len, val_split=.2, sup_batch_size=4, unsup_batch_size=32, 
+  def __init__(self,model_dir,seq_len, val_split=.2, sup_batch_size=4, unsup_batch_size=32, 
                sample_size=16384, unsup_size=4096, sample_scheme="easy_bald_class_conf", sup_labels=60, T=30, alpha=.1, valid_split=.5, sup_epochs=70,
-               unsup_epochs=25, N_base=5, pt_teacher="TFBertModel", pt_teacher_checkpoint="bert-base-uncased", do_pairwise=False, hidden_dropout=.2, 
+               unsup_epochs=25, N_base=1, pt_teacher="TFBertModel", pt_teacher_checkpoint="bert-base-uncased", do_pairwise=False, hidden_dropout=.2, 
                attention_probs_dropout_prob=.2, dense_dropout=.5,GLOBAL_SEED=None):
     
-    self.train_config={'train_file_path':train_file_path,'train_t_col':train_t_col,'train_f_col':train_f_col}
-    self.test_config={'test_file_path':test_file_path,'test_t_col':test_t_col,'test_f_col':test_f_col}
-    self.transfer_config={'transfer_file_path':transfer_file_path, 'transfer_f_col':transfer_f_col}
     self.config={'model_dir':model_dir,'seq_len':seq_len, 'val_split':val_split, 'sup_batch_size':sup_batch_size, 'unsup_batch_size':unsup_batch_size, 
                'sample_size':sample_size, 'unsup_size':unsup_size, 'sample_scheme':sample_scheme, 'sup_labels':sup_labels, 'T':T, 'alpha':alpha, 'valid_split':valid_split, 'sup_epochs':sup_epochs,
                'unsup_epochs':unsup_epochs, 'N_base':N_base, 'pt_teacher':pt_teacher, 'pt_teacher_checkpoint':pt_teacher_checkpoint, 'do_pairwise':False, 'hidden_dropout':hidden_dropout, 
@@ -35,19 +34,17 @@ class UST_trainer:
 
   
   
-  def generate_sequence_data(self,seq_len,file_path, tokenizer,target_col=None,feature_col=None,unlabeled=False, do_pairwise=False):
+  def generate_sequence_data(self,df,seq_len,tokenizer,unlabeled=False, do_pairwise=False):
       X1 = []
       X2 = []
       y = []
       label_count = defaultdict(int)
-      if feature_col==None and target_col==None:
-        df=pd.read_csv(file_path,header=None)
+      '''
+      if unlabeled:
+        df=df[feature_col]
       else:
-        df=pd.read_csv(file_path)
-        if unlabeled:
-          df=df[feature_col]
-        else:
-          df=df[[feature_col, target_col]]
+        df=df[[feature_col, target_col]]
+      '''
       for i in range(len(df)):
         line=df.iloc[i]
         if len(line) == 0:
@@ -78,13 +75,13 @@ class UST_trainer:
           token_type_ids = np.array(X["token_type_ids"])
       return {"input_ids": np.array(X["input_ids"]), "token_type_ids": token_type_ids, "attention_mask": np.array(X["attention_mask"])}, np.array(y)
 
-  def train(self):
+  def train(self,train_df,test_df,transfer_df):
     #getting the model and the tokenizer
     model,tokenizer, config= self.get_model_data()
     # converting train, test and unabelled into respective datasets
-    X_train_all, y_train_all = self.generate_sequence_data(self.config['seq_len'], self.train_config['train_file_path'], tokenizer, feature_col=self.train_config['train_f_col'],target_col=self.train_config['train_t_col'], unlabeled=False, do_pairwise=self.config['do_pairwise'])
-    X_test, y_test = self.generate_sequence_data(self.config['seq_len'], self.test_config['test_file_path'], tokenizer, feature_col=self.test_config['test_f_col'],target_col=self.test_config['test_t_col'], do_pairwise=self.config['do_pairwise'])
-    X_unlabeled, _ = self.generate_sequence_data(self.config['seq_len'],self.transfer_config['transfer_file_path'],tokenizer, feature_col=self.transfer_config['transfer_f_col'], unlabeled=True, do_pairwise=self.config['do_pairwise'])
+    X_train_all, y_train_all = self.generate_sequence_data(train_df,self.config['seq_len'],tokenizer, unlabeled=False, do_pairwise=self.config['do_pairwise'])
+    X_test, y_test = self.generate_sequence_data(test_df,self.config['seq_len'], tokenizer, unlabeled=False,do_pairwise=self.config['do_pairwise'])
+    X_unlabeled, _ = self.generate_sequence_data(transfer_df,self.config['seq_len'],tokenizer, unlabeled=True, do_pairwise=self.config['do_pairwise'])
     labels = set(y_train_all)
     if 0 not in labels:
       y_train_all -= 1
@@ -92,6 +89,7 @@ class UST_trainer:
     labels = set(y_train_all)	
     #if sup_labels < 0, then use all training labels in train file for learning
     sup_labels=self.config["sup_labels"]
+    logger.info("checking sup_labels")
     if sup_labels < 0:
       X_train = X_train_all
       y_train = y_train_all
